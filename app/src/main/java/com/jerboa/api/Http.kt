@@ -5,11 +5,14 @@ import android.util.Log
 import com.jerboa.datatypes.types.*
 import com.jerboa.db.Account
 import com.jerboa.toastException
+import com.jerboa.util.DisableLog
+import okhttp3.Interceptor
 import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.logging.HttpLoggingInterceptor
 import org.json.JSONObject
+import retrofit2.Invocation
 import retrofit2.Response
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
@@ -39,6 +42,7 @@ interface API {
     /**
      * Log into lemmy.
      */
+    @DisableLog
     @POST("user/login")
     suspend fun login(@Body form: Login): Response<LoginResponse>
 
@@ -257,7 +261,6 @@ interface API {
 
         private fun buildApi(): API {
             val interceptor = HttpLoggingInterceptor()
-            interceptor.level = HttpLoggingInterceptor.Level.BODY
             val client: OkHttpClient = OkHttpClient.Builder()
                 .addInterceptor { chain ->
                     val requestBuilder = chain.request().newBuilder()
@@ -265,6 +268,17 @@ interface API {
                     val newRequest = requestBuilder.build()
                     chain.proceed(newRequest)
                 }
+                .addInterceptor(object : Interceptor {
+                    // based on https://stackoverflow.com/a/76264357
+                    override fun intercept(chain: Interceptor.Chain): okhttp3.Response {
+                        val request = chain.request()
+                        val invocation = request.tag(Invocation::class.java)
+                        val disableLog = invocation?.method()?.getAnnotation(DisableLog::class.java)
+                        val shouldLogBody: Boolean = disableLog == null
+                        interceptor.setLevel(if (shouldLogBody) HttpLoggingInterceptor.Level.BODY else HttpLoggingInterceptor.Level.NONE)
+                        return chain.proceed(request)
+                    }
+                })
                 .addInterceptor(interceptor)
                 .build()
 
