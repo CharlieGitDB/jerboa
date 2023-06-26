@@ -2,15 +2,18 @@ package com.jerboa
 
 import android.app.Application
 import android.content.Intent
-import android.graphics.Color
-import android.graphics.drawable.ColorDrawable
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.util.Log
 import android.util.Patterns
-import androidx.activity.ComponentActivity
+import android.widget.Toast
 import androidx.activity.compose.setContent
 import androidx.activity.viewModels
+import androidx.appcompat.app.AppCompatActivity
+import androidx.compose.animation.ExperimentalAnimationApi
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.livedata.observeAsState
@@ -18,12 +21,13 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.platform.LocalContext
 import androidx.navigation.NavType
-import androidx.navigation.compose.NavHost
-import androidx.navigation.compose.composable
-import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import androidx.navigation.navDeepLink
 import arrow.core.Either
+import com.google.accompanist.navigation.animation.AnimatedNavHost
+import com.google.accompanist.navigation.animation.composable
+import com.google.accompanist.navigation.animation.rememberAnimatedNavController
+import com.jerboa.api.API
 import com.jerboa.api.ApiState
 import com.jerboa.api.MINIMUM_API_VERSION
 import com.jerboa.datatypes.types.GetCommunity
@@ -32,7 +36,6 @@ import com.jerboa.datatypes.types.GetPersonMentions
 import com.jerboa.datatypes.types.GetPosts
 import com.jerboa.datatypes.types.GetPrivateMessages
 import com.jerboa.datatypes.types.GetReplies
-import com.jerboa.datatypes.types.ListingType
 import com.jerboa.datatypes.types.SortType
 import com.jerboa.db.AccountRepository
 import com.jerboa.db.AccountViewModel
@@ -56,7 +59,9 @@ import com.jerboa.ui.components.community.CommunityViewModel
 import com.jerboa.ui.components.community.list.CommunityListActivity
 import com.jerboa.ui.components.community.list.CommunityListViewModel
 import com.jerboa.ui.components.community.sidebar.CommunitySidebarActivity
-import com.jerboa.ui.components.home.*
+import com.jerboa.ui.components.home.BottomNavActivity
+import com.jerboa.ui.components.home.HomeViewModel
+import com.jerboa.ui.components.home.SiteViewModel
 import com.jerboa.ui.components.home.sidebar.SiteSidebarActivity
 import com.jerboa.ui.components.inbox.InboxActivity
 import com.jerboa.ui.components.inbox.InboxViewModel
@@ -89,7 +94,7 @@ class JerboaApplication : Application() {
     val appSettingsRepository by lazy { AppSettingsRepository(database.appSettingsDao()) }
 }
 
-class MainActivity : ComponentActivity() {
+class MainActivity : AppCompatActivity() {
 
     private val homeViewModel by viewModels<HomeViewModel>()
     private val postViewModel by viewModels<PostViewModel>()
@@ -115,23 +120,36 @@ class MainActivity : ComponentActivity() {
         AppSettingsViewModelFactory((application as JerboaApplication).appSettingsRepository)
     }
 
+    @OptIn(ExperimentalAnimationApi::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        window.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
-
         val accountSync = getCurrentAccountSync(accountViewModel)
-        fetchInitialData(accountSync, siteViewModel, homeViewModel)
 
         setContent {
+            val ctx = LocalContext.current
+
+            API.errorHandler = {
+                Log.e("jerboa", it.toString())
+                runOnUiThread {
+                    Toast.makeText(
+                        ctx,
+                        ctx.resources.getString(R.string.networkError),
+                        Toast.LENGTH_SHORT,
+                    ).show()
+                }
+                null
+            }
+
+            fetchInitialData(accountSync, siteViewModel, homeViewModel)
+
             val account = getCurrentAccount(accountViewModel)
             val appSettings by appSettingsViewModel.appSettings.observeAsState()
 
             JerboaTheme(
                 appSettings = appSettings,
             ) {
-                val navController = rememberNavController()
-                val ctx = LocalContext.current
+                val navController = rememberAnimatedNavController()
                 val serverVersionOutdatedViewed = remember { mutableStateOf(false) }
 
                 MarkdownHelper.init(
@@ -155,9 +173,13 @@ class MainActivity : ComponentActivity() {
                     else -> {}
                 }
 
-                NavHost(
+                AnimatedNavHost(
                     navController = navController,
                     startDestination = "home",
+                    enterTransition = { slideInHorizontally { it } },
+                    exitTransition = { slideOutHorizontally { -it } },
+                    popEnterTransition = { slideInHorizontally { -it } },
+                    popExitTransition = { slideOutHorizontally { it } },
                 ) {
                     composable(
                         route = "login",
@@ -176,16 +198,20 @@ class MainActivity : ComponentActivity() {
                     composable(
                         route = "home",
                     ) {
-                        HomeActivity(
+                        BottomNavActivity(
                             navController = navController,
                             homeViewModel = homeViewModel,
                             accountViewModel = accountViewModel,
                             siteViewModel = siteViewModel,
                             postEditViewModel = postEditViewModel,
                             appSettingsViewModel = appSettingsViewModel,
-                            showVotingArrowsInListView = appSettings?.showVotingArrowsInListView ?: true,
-                            useCustomTabs = appSettings?.useCustomTabs ?: true,
-                            usePrivateTabs = appSettings?.usePrivateTabs ?: false,
+                            appSettings = appSettings,
+                            communityListViewModel = communityListViewModel,
+                            inboxViewModel = inboxViewModel,
+                            commentReplyViewModel = commentReplyViewModel,
+                            commentEditViewModel = commentEditViewModel,
+                            personProfileViewModel = personProfileViewModel,
+                            privateMessageReplyViewModel = privateMessageReplyViewModel,
                         )
                     }
                     composable(
@@ -261,8 +287,8 @@ class MainActivity : ComponentActivity() {
                             communityViewModel.getPosts(
                                 GetPosts(
                                     community_name = name,
-                                    type_ = ListingType.values()[account?.defaultListingType ?: 1],
-                                    sort = SortType.values()[account?.defaultSortType ?: 0],
+                                    type_ = homeViewModel.listingType,
+                                    sort = homeViewModel.sortType,
                                     auth = account?.jwt,
                                 ),
                             )
@@ -382,8 +408,6 @@ class MainActivity : ComponentActivity() {
                         CommunityListActivity(
                             navController = navController,
                             accountViewModel = accountViewModel,
-                            siteViewModel = siteViewModel,
-                            appSettingsViewModel = appSettingsViewModel,
                             communityListViewModel = communityListViewModel,
                             selectMode = it.arguments?.getBoolean("select")!!,
                         )
@@ -456,7 +480,6 @@ class MainActivity : ComponentActivity() {
 
                         InboxActivity(
                             navController = navController,
-                            appSettingsViewModel = appSettingsViewModel,
                             inboxViewModel = inboxViewModel,
                             accountViewModel = accountViewModel,
                             commentReplyViewModel = commentReplyViewModel,
@@ -669,6 +692,7 @@ class MainActivity : ComponentActivity() {
                             accountViewModel = accountViewModel,
                             siteViewModel = siteViewModel,
                             accountSettingsViewModel = accountSettingsViewModel,
+                            homeViewModel = homeViewModel,
                         )
                     }
                     composable(
